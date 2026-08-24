@@ -123,10 +123,17 @@ def _to_amount(value) -> float:
 
 
 def fetch_ib_issuance(date: pd.Timestamp, issue_on: str) -> pd.DataFrame:
-    """巨潮国债发行，只保留银行间市场记录。"""
-    ymd = date.strftime("%Y%m%d")
+    """巨潮国债发行，只保留银行间市场记录。
+
+    巨潮接口的起止日按发行起始日筛窗。缴款日通常晚于发行起始日，因此
+    先多取一段窗口，再在本地按 ``issue_on`` 精确匹配查询日。
+    """
+    window_start = (date - pd.Timedelta(days=21)).strftime("%Y%m%d")
+    window_end = (date + pd.Timedelta(days=3)).strftime("%Y%m%d")
     try:
-        raw = ak.bond_treasure_issue_cninfo(start_date=ymd, end_date=ymd)
+        raw = ak.bond_treasure_issue_cninfo(
+            start_date=window_start, end_date=window_end
+        )
     except Exception:
         raw = pd.DataFrame()
 
