@@ -17,16 +17,20 @@
     python treasury_ib_flow.py 2026-08-21
     python treasury_ib_flow.py --date 20260821 --refresh-cache
     python treasury_ib_flow.py 2026-08-21 --issue-on 缴款日
+    python treasury_ib_flow.py --serve --port 8080
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import requests
@@ -44,7 +48,9 @@ DETAIL_URL = f"{CHINAMONEY_ORIGIN}/ags/ms/cm-u-bond-md/BondDetailInfo"
 # 与 notebook 中 bond_type="国债" 对应的债券类型代码
 TREASURY_BOND_TYPE = "100001"
 IB_MARKET_KEYWORD = "银行间"
-CACHE_PATH = Path(__file__).resolve().parent / ".cache" / "ib_treasury_details.csv"
+ROOT_DIR = Path(__file__).resolve().parent
+CACHE_PATH = ROOT_DIR / ".cache" / "ib_treasury_details.csv"
+HTML_PATH = ROOT_DIR / "treasury_ib_flow.html"
 AMOUNT_UNIT = "亿元"
 
 HEADERS = {
@@ -220,19 +226,24 @@ def _detail_one(sess: requests.Session, defined_code: str) -> dict:
     }
 
 
-def load_ib_treasury_details(refresh: bool, workers: int) -> pd.DataFrame:
+def load_ib_treasury_details(
+    refresh: bool, workers: int, quiet: bool = False
+) -> pd.DataFrame:
     if CACHE_PATH.exists() and not refresh:
         cached = pd.read_csv(CACHE_PATH, dtype=str)
         for col in ("计划发行量", "实际发行量"):
             if col in cached.columns:
                 cached[col] = pd.to_numeric(cached[col], errors="coerce")
-        print(f"已读取缓存 {CACHE_PATH}（{len(cached)} 只国债）。需要刷新时加 --refresh-cache")
+        if not quiet:
+            print(f"已读取缓存 {CACHE_PATH}（{len(cached)} 只国债）。需要刷新时加 --refresh-cache")
         return cached
 
-    print("正在从中国货币网拉取银行间国债列表与详情（首次或刷新缓存）…")
+    if not quiet:
+        print("正在从中国货币网拉取银行间国债列表与详情（首次或刷新缓存）…")
     sess = _session()
     listing = _list_ib_treasuries(sess)
-    print(f"列表 {len(listing)} 只，开始拉详情（workers={workers}）…")
+    if not quiet:
+        print(f"列表 {len(listing)} 只，开始拉详情（workers={workers}）…")
 
     details: list[dict] = []
     codes = listing["查询代码"].tolist()
@@ -243,19 +254,22 @@ def load_ib_treasury_details(refresh: bool, workers: int) -> pd.DataFrame:
         for fut in as_completed(futs):
             details.append(fut.result())
             done += 1
-            if done % 100 == 0 or done == len(codes):
+            if (done % 100 == 0 or done == len(codes)) and not quiet:
                 elapsed = time.time() - t0
                 print(f"  详情 {done}/{len(codes)}  {elapsed:.1f}s")
 
     df = pd.DataFrame(details)
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(CACHE_PATH, index=False)
-    print(f"已写入缓存 {CACHE_PATH}")
+    if not quiet:
+        print(f"已写入缓存 {CACHE_PATH}")
     return df
 
 
-def fetch_ib_maturity(date: pd.Timestamp, refresh: bool, workers: int) -> pd.DataFrame:
-    details = load_ib_treasury_details(refresh=refresh, workers=workers)
+def fetch_ib_maturity(
+    date: pd.Timestamp, refresh: bool, workers: int, quiet: bool = False
+) -> pd.DataFrame:
+    details = load_ib_treasury_details(refresh=refresh, workers=workers, quiet=quiet)
     if details.empty:
         return pd.DataFrame(columns=MATURITY_COLUMNS)
 
@@ -272,6 +286,136 @@ def _fmt_amount(value: float) -> str:
     if pd.isna(value):
         return "0.00"
     return f"{float(value):,.2f}"
+
+
+def _json_cell(value):
+    if value is None:
+        return None
+    if isinstance(value, (pd.Timestamp,)):
+        if pd.isna(value):
+            return None
+        return value.strftime("%Y-%m-%d")
+    if hasattr(value, "item") and not isinstance(value, (bytes, str)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if hasattr(value, "strftime") and not isinstance(value, str):
+        try:
+            return value.strftime("%Y-%m-%d")
+        except Exception:
+            return str(value)
+    return value
+
+
+def dataframe_records(df: pd.DataFrame) -> list[dict]:
+    if df is None or df.empty:
+        return []
+    records: list[dict] = []
+    for row in df.to_dict(orient="records"):
+        records.append({key: _json_cell(val) for key, val in row.items()})
+    return records
+
+
+def query_ib_flow(
+    date: pd.Timestamp,
+    issue_on: str = "发行起始日",
+    refresh: bool = False,
+    workers: int = 12,
+    quiet: bool = False,
+) -> dict:
+    issuance = fetch_ib_issuance(date, issue_on=issue_on)
+    maturity = fetch_ib_maturity(
+        date, refresh=refresh, workers=workers, quiet=quiet
+    )
+    issue_amt = float(issuance["实际发行总量"].sum()) if not issuance.empty else 0.0
+    mature_amt = float(maturity["实际发行量"].sum()) if not maturity.empty else 0.0
+    return {
+        "date": date.strftime("%Y-%m-%d"),
+        "issue_on": issue_on,
+        "unit": AMOUNT_UNIT,
+        "scope": "仅银行间市场上市国债（跨市场不去重会重复加总）",
+        "issuance_amount": round(issue_amt, 4),
+        "maturity_amount": round(mature_amt, 4),
+        "net_supply": round(issue_amt - mature_amt, 4),
+        "issuance_count": int(len(issuance)),
+        "maturity_count": int(len(maturity)),
+        "issuance": dataframe_records(issuance),
+        "maturity": dataframe_records(maturity),
+    }
+
+
+class TreasuryFlowHandler(SimpleHTTPRequestHandler):
+    def log_message(self, fmt: str, *args) -> None:
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def _send(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path in {"/", "/index.html", "/treasury_ib_flow.html"}:
+            if not HTML_PATH.exists():
+                self._send(500, "找不到 treasury_ib_flow.html".encode("utf-8"), "text/plain; charset=utf-8")
+                return
+            self._send(200, HTML_PATH.read_bytes(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/query":
+            params = parse_qs(parsed.query)
+            raw_date = (params.get("date") or [""])[0]
+            issue_on = (params.get("issue_on") or ["发行起始日"])[0]
+            refresh = (params.get("refresh") or ["0"])[0] in {"1", "true", "yes"}
+            if issue_on not in {"发行起始日", "缴款日"}:
+                payload = {"error": "issue_on 只能是 发行起始日 或 缴款日"}
+                self._send(
+                    400,
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+                return
+            try:
+                date = parse_date(raw_date)
+                result = query_ib_flow(date, issue_on=issue_on, refresh=refresh, quiet=True)
+                self._send(
+                    200,
+                    json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+            except ValueError as err:
+                payload = {"error": str(err)}
+                self._send(
+                    400,
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+            except Exception as err:  # noqa: BLE001
+                payload = {"error": f"查询失败: {err}"}
+                self._send(
+                    500,
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+            return
+        self._send(404, "Not Found".encode("utf-8"), "text/plain; charset=utf-8")
+
+
+def serve(host: str, port: int) -> None:
+    httpd = ThreadingHTTPServer((host, port), TreasuryFlowHandler)
+    print(f"国债发行/到期查询: http://{host}:{port}/")
+    print("在浏览器中打开后输入日期即可查询。Ctrl+C 结束。")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n已停止。")
+    finally:
+        httpd.server_close()
 
 
 def report(date: pd.Timestamp, issue_on: str, issuance: pd.DataFrame, maturity: pd.DataFrame) -> None:
@@ -321,14 +465,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--refresh-cache", action="store_true", help="强制刷新货币网国债详情缓存")
     parser.add_argument("--workers", type=int, default=12, help="拉详情时的并发数")
+    parser.add_argument("--serve", action="store_true", help="启动网页，用浏览器按日期查询")
+    parser.add_argument("--host", default="0.0.0.0", help="网页服务监听地址，默认 0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080, help="网页服务端口，默认 8080")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.serve:
+        serve(args.host, args.port)
+        return 0
     raw_date = args.date_opt or args.date
     if not raw_date:
-        print("请提供查询日期，例如: python treasury_ib_flow.py 2026-08-21", file=sys.stderr)
+        print(
+            "请提供查询日期，例如: python treasury_ib_flow.py 2026-08-21\n"
+            "或启动网页: python treasury_ib_flow.py --serve",
+            file=sys.stderr,
+        )
         return 2
     date = parse_date(raw_date)
     issuance = fetch_ib_issuance(date, issue_on=args.issue_on)

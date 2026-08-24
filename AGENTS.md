@@ -32,3 +32,7 @@ market data.
   comes from chinamoney `BondMarketInfoList2` + `BondDetailInfo`. First maturity run writes
   `.cache/ib_treasury_details.csv` (gitignored, a few minutes); later runs reuse it unless
   `--refresh-cache`. Use `--issue-on 缴款日` if matching cash-settlement date instead of auction date.
+- Web UI: `python treasury_ib_flow.py --serve --port 8080` then open `http://localhost:8080/`.
+  The page is `treasury_ib_flow.html`; queries go to `/api/query?date=YYYY-MM-DD&issue_on=发行起始日`.
+  Do not open the HTML as a `file://` page — the date picker needs this local API. If port 8080 is
+  taken, pass another `--port`. JupyterLab may already be on 8888.
