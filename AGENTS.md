@@ -24,4 +24,11 @@ market data.
 - Known pre-existing issue (NOT an environment problem): `ChinaTreasury.ipynb` cell 2 calls
   `ak.bond_info_cm_query()`, which raises `KeyError: 'bondRtngShrt'` due to an upstream akshare/API
   change. This error is already saved in the committed notebook output. Do not "fix" it as part of
-  environment setup.
+  environment setup. `ak.bond_info_cm_query(symbol="债券类型")` and
+  `ak.bond_info_cm(bond_type="国债")` still work; only the default symbol `"评级等级"` is broken.
+- `treasury_ib_flow.py` pulls **interbank-listed** China treasury issuance and maturity for one date:
+  `python treasury_ib_flow.py 2026-08-21`. Issuance comes from cninfo (filter `交易市场` containing
+  银行间, so the same book-entry bond is not triple-counted across SSE/SZSE/interbank). Maturity
+  comes from chinamoney `BondMarketInfoList2` + `BondDetailInfo`. First maturity run writes
+  `.cache/ib_treasury_details.csv` (gitignored, a few minutes); later runs reuse it unless
+  `--refresh-cache`. Use `--issue-on 缴款日` if matching cash-settlement date instead of auction date.
