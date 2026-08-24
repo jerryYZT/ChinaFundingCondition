@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>银行间国债发行 / 到期查询</title>
+  <style>
+    :root {
+      --bg: #f3f5f8;
+      --card: #ffffff;
+      --ink: #1c2430;
+      --muted: #667085;
+      --line: #e6eaf0;
+      --brand: #1f4e79;
+      --brand-2: #2e6aa6;
+      --up: #c2410c;
+      --down: #0f766e;
+      --shadow: 0 10px 30px rgba(28, 36, 48, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(1200px 400px at 10% -10%, #dbe7f5 0%, transparent 60%),
+        var(--bg);
+      color: var(--ink);
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0.02em; }
+    .sub { color: var(--muted); margin-bottom: 24px; line-height: 1.6; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    form {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 16px;
+      align-items: end;
+    }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input[type="date"], select, button {
+      width: 100%;
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid #d0d7e2;
+      padding: 0 12px;
+      font-size: 15px;
+      background: #fff;
+      color: var(--ink);
+    }
+    button {
+      background: linear-gradient(180deg, var(--brand-2), var(--brand));
+      color: #fff;
+      border: 0;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.65; cursor: wait; }
+    .chips { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      color: var(--brand);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin: 22px 0;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 18px;
+    }
+    .card .k { color: var(--muted); font-size: 13px; }
+    .card .v { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .card .u { font-size: 13px; color: var(--muted); }
+    .net-pos { color: var(--up); }
+    .net-neg { color: var(--down); }
+    .status { min-height: 24px; color: var(--muted); margin: 8px 0 16px; }
+    .status.error { color: #b91c1c; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; background: #fafbfd; }
+    .empty { color: var(--muted); padding: 12px 0; }
+    @media (max-width: 800px) {
+      form, .cards { grid-template-columns: 1fr; }
+      h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>银行间国债发行 / 到期查询</h1>
+    <p class="sub">
+      只加总银行间市场上市的国债，避免同一只记账式国债在上交所、深交所、银行间被重复统计。
+      发行额来自巨潮发行明细（含续发）；到期额来自中国货币网债券详情。
+    </p>
+
+    <div class="panel">
+      <form id="query-form">
+        <div>
+          <label for="date">查询日期</label>
+          <input id="date" name="date" type="date" required />
+        </div>
+        <div>
+          <label for="issue-on">发行额匹配字段</label>
+          <select id="issue-on" name="issue_on">
+            <option value="发行起始日">发行起始日（招标/发行日）</option>
+            <option value="缴款日">缴款日（资金面）</option>
+          </select>
+        </div>
+        <button id="submit" type="submit">查询</button>
+      </form>
+      <div class="chips">
+        <button type="button" class="chip" data-date="2026-08-21">示例：2026-08-21 发行</button>
+        <button type="button" class="chip" data-date="2026-01-15">示例：2026-01-15 到期</button>
+        <button type="button" class="chip" data-date="2026-08-24" data-issue-on="缴款日">示例：2026-08-24 缴款</button>
+      </div>
+    </div>
+
+    <p class="status" id="status">选择日期后点击查询。</p>
+
+    <div class="cards" id="summary" hidden>
+      <div class="card">
+        <div class="k">发行额</div>
+        <div class="v" id="issuance-amount">—</div>
+        <div class="u" id="issuance-meta"></div>
+      </div>
+      <div class="card">
+        <div class="k">到期额</div>
+        <div class="v" id="maturity-amount">—</div>
+        <div class="u" id="maturity-meta"></div>
+      </div>
+      <div class="card">
+        <div class="k">净供给（发行 − 到期）</div>
+        <div class="v" id="net-amount">—</div>
+        <div class="u">正值表示净供给增加</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 16px">
+      <h2 style="margin: 0 0 10px; font-size: 18px">发行明细</h2>
+      <div id="issuance-table" class="empty">查询后显示当日银行间国债发行。</div>
+    </div>
+    <div class="panel">
+      <h2 style="margin: 0 0 10px; font-size: 18px">到期明细</h2>
+      <div id="maturity-table" class="empty">查询后显示当日银行间国债到期。</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const dateInput = $("date");
+    const issueOnInput = $("issue-on");
+    const statusEl = $("status");
+    const summaryEl = $("summary");
+
+    const today = new Date();
+    dateInput.value = today.toISOString().slice(0, 10);
+
+    function fmt(n) {
+      const x = Number(n || 0);
+      return x.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function renderTable(el, rows, columns) {
+      if (!rows || !rows.length) {
+        el.className = "empty";
+        el.textContent = "当日无记录。";
+        return;
+      }
+      const head = columns.map((c) => `<th>${c}</th>`).join("");
+      const body = rows.map((row) => {
+        const tds = columns.map((c) => `<td>${row[c] ?? ""}</td>`).join("");
+        return `<tr>${tds}</tr>`;
+      }).join("");
+      el.className = "";
+      el.innerHTML = `<div style="overflow:auto"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    async function runQuery() {
+      const date = dateInput.value;
+      const issueOn = issueOnInput.value;
+      if (!date) return;
+      $("submit").disabled = true;
+      statusEl.className = "status";
+      statusEl.textContent = "正在查询，请稍候…";
+      try {
+        const params = new URLSearchParams({ date, issue_on: issueOn });
+        const res = await fetch(`/api/query?${params.toString()}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "查询失败");
+
+        summaryEl.hidden = false;
+        $("issuance-amount").textContent = fmt(data.issuance_amount);
+        $("maturity-amount").textContent = fmt(data.maturity_amount);
+        $("net-amount").textContent = fmt(data.net_supply);
+        $("net-amount").className = "v " + (data.net_supply >= 0 ? "net-pos" : "net-neg");
+        $("issuance-meta").textContent = `${data.issuance_count} 笔 · ${data.unit}`;
+        $("maturity-meta").textContent = `${data.maturity_count} 只 · ${data.unit}`;
+
+        renderTable($("issuance-table"), data.issuance, [
+          "债券代码", "债券简称", "发行起始日", "缴款日", "实际发行总量", "增发次数", "交易市场"
+        ]);
+        renderTable($("maturity-table"), data.maturity, [
+          "债券代码", "债券简称", "发行日", "到期兑付日", "期限", "实际发行量"
+        ]);
+        statusEl.textContent = `${data.date} · ${data.scope} · 发行匹配「${data.issue_on}」`;
+      } catch (err) {
+        statusEl.className = "status error";
+        statusEl.textContent = err.message || String(err);
+      } finally {
+        $("submit").disabled = false;
+      }
+    }
+
+    $("query-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      runQuery();
+    });
+    document.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        dateInput.value = chip.dataset.date;
+        if (chip.dataset.issueOn) issueOnInput.value = chip.dataset.issueOn;
+        else issueOnInput.value = "发行起始日";
+        runQuery();
+      });
+    });
+  </script>
+</body>
+</html>
